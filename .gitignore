@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Isaac Lab / simulacion
+isaac_lab/
+*.kit
+*.usd.cache
+
+# Entrenamiento y resultados
+salidas/
+wandb/
+tensorboard/
+
+# STL
+*.stl
+assets/robot/meshes/
+
+# Editor / sistema
+.vscode/
+.idea/
+.DS_Store
