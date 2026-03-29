@@ -1,4 +1,4 @@
-# Robotica KBot Isaac
+# RL Marcha Bípeda con KBot
 
 Repositorio limpio para trabajo con KBot sobre Isaac Lab.
 
@@ -7,8 +7,8 @@ Repositorio limpio para trabajo con KBot sobre Isaac Lab.
 Separar:
 
 - instalacion base de Isaac Lab
-- codigo propio del proyecto
-- assets redistribuibles
+- codigo del proyecto
+- assets
 - pruebas y salidas
 
 
@@ -28,7 +28,6 @@ robotica_kbot_isaac/
 
 ## Siguientes pasos
 
-1. Instalar Isaac Lab limpio dentro de `isaac_lab/IsaacLab`.
-2. Activar el entorno virtual desde `setup/activar.sh`.
-3. Migrar los archivos de prueba desde `kbot-rl-loco` hacia `codigo/` y `scripts/`.
-4. Recién después evaluar si conviene renombrar `kbot-rl-loco` a `kbot-rl-loco(old)`.
+1. 
+2. 
+3. 
