@@ -1,63 +1,52 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 import argparse
-import os
-import torch
 from pathlib import Path
+
+import torch
 
 from isaaclab.app import AppLauncher
 from configuraciones.kbot_box_top import ConfiguracionKBotBoxTop
 
+CHECKPOINT = "salidas/rsl_rl_marcha_vectorizado/model_0.pt"
+
+
 def main():
-    # 1. Parse Arguments & Launch Isaac Sim
     parser = argparse.ArgumentParser()
-    parser.add_argument("--num-envs", type=int, default=4096)
-    parser.add_argument("--iteraciones", type=int, default=4000)
-    parser.add_argument(
-        "--fabric-cloning",
-        action="store_true",
-        help="Activa clone_in_fabric en la escena. Dejar apagado evita fallos de clonacion en escenas no compatibles.",
-    )
+    parser.add_argument("--num-envs", type=int, default=1)
+    parser.add_argument("--num-pasos", type=int, default=4000)
     AppLauncher.add_app_launcher_args(parser)
     args = parser.parse_args()
 
     app_launcher = AppLauncher(args)
     simulation_app = app_launcher.app
 
-    # Standard imports (MUST be after app_launcher to avoid Isaac Sim crashes)
     from rsl_rl.runners import OnPolicyRunner
     from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
     from entornos.marcha_rsl_rl_env import ConfiguracionEntornoMarchaRslRl, EntornoMarchaRslRl
 
+    raiz_repo = Path(__file__).resolve().parents[2]
+    ruta_checkpoint = (raiz_repo / CHECKPOINT).resolve()
+    if not ruta_checkpoint.is_file():
+        raise FileNotFoundError(f"No existe el checkpoint: {ruta_checkpoint}")
+
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    log_dir = str((Path(__file__).resolve().parents[2] / "salidas/rsl_rl_marcha_vectorizado").resolve())
-    os.makedirs(log_dir, exist_ok=True)
+    cfg_entorno = ConfiguracionEntornoMarchaRslRl(dispositivo=device, num_entornos=args.num_envs)
+    env_base = EntornoMarchaRslRl(cfg_entorno, ConfiguracionKBotBoxTop(), headless=args.headless)
+    env = RslRlVecEnvWrapper(env_base)
 
-    # 2. Initialize Environment
-    cfg_entorno = ConfiguracionEntornoMarchaRslRl(
-        dispositivo=device,
-        num_entornos=args.num_envs,
-        usar_clone_en_fabric=args.fabric_cloning,
-    )
-    cfg_robot = ConfiguracionKBotBoxTop()
-    
-    env_base = EntornoMarchaRslRl(cfg_entorno, cfg_robot, headless=args.headless)
-    env = RslRlVecEnvWrapper(env_base) # Standard Isaac Lab wrapper
-
-    # 3. Configure RSL-RL PPO
-    
+    pasos_rollout = 256
     cfg_rsl = {
         "seed": 42,
         "device": device,
-        "num_steps_per_env": 4096,
+        "num_steps_per_env": pasos_rollout,
         "save_interval": 25,
         "experiment_name": "marcha_rsl_rl",
-        "run_name": "1",
+        "run_name": "",
         "logger": "tensorboard",
         "resume": False,
-        "obs_groups": {
-            "actor": ["policy"],
-            "critic": ["policy"],
-        },
+        "obs_groups": {"actor": ["policy"], "critic": ["policy"]},
         "actor": {
             "class_name": "MLPModel",
             "hidden_dims": [256, 256],
@@ -93,12 +82,29 @@ def main():
         },
     }
 
-    # 4. Train!
-    print(f"[INFO] Iniciando entrenamiento. Tensorboard logs en: {log_dir}")
-    runner = OnPolicyRunner(env, cfg_rsl, log_dir=log_dir, device=device)
-    runner.learn(num_learning_iterations=args.iteraciones, init_at_random_ep_len=False)
+    print(f"[INFO] Cargando checkpoint: {ruta_checkpoint}", flush=True)
+    runner = OnPolicyRunner(env, cfg_rsl, log_dir=None, device=device)
+    runner.load(str(ruta_checkpoint))
+    policy = runner.get_inference_policy(device=env.unwrapped.device)
+
+    obs = env.get_observations()
+    for paso in range(args.num_pasos):
+        with torch.inference_mode():
+            acciones = policy(obs)
+            obs, recompensas, dones, extras = env.step(acciones)
+
+        if paso % 200 == 0:
+            print(
+                f"[PASO {paso:05d}] "
+                f"recompensa_media={float(recompensas.mean().item()): .4f} "
+                f"terminaciones={int(dones.sum().item())}",
+                flush=True,
+            )
+            if extras and "log" in extras and "episode" in extras["log"]:
+                print(f"[INFO] episode={extras['log']['episode']}", flush=True)
 
     simulation_app.close()
+
 
 if __name__ == "__main__":
     main()

@@ -36,6 +36,7 @@ class ConfiguracionEntornoMarchaRslRl:
     dispositivo: str = "cuda:0"
     num_entornos: int = 64
     espaciado_entornos: float = 2.5
+    usar_clone_en_fabric: bool = False
     dt_simulacion: float = 1.0 / 120.0
     decimacion: int = 2
     pasos_maximos_episodio: int = 1200
@@ -46,7 +47,7 @@ class ConfiguracionEntornoMarchaRslRl:
     escala_accion: float = 0.20
 
     velocidad_objetivo_min: float = 0.10
-    velocidad_objetivo_max: float = 0.60
+    velocidad_objetivo_max: float = 1.20
     intervalo_reinicio_comando: int = 240
 
     altura_minima_base: float = 0.45
@@ -76,9 +77,10 @@ class EntornoMarchaRslRl(DirectRLEnv):
         self.cfg_robot = configuracion_robot
         self.headless = headless
 
-        self.device = torch.device(self.cfg.dispositivo)
-        self.num_envs = self.cfg.num_entornos
-        self.max_episode_length = self.cfg.pasos_maximos_episodio
+        self._device = torch.device(self.cfg.dispositivo)
+        self.dispositivo = self._device
+        self._num_envs = self.cfg.num_entornos
+        self._max_episode_length = self.cfg.pasos_maximos_episodio
         self.render_mode = None
         self.metadata = {}
 
@@ -135,13 +137,24 @@ class EntornoMarchaRslRl(DirectRLEnv):
     def act_dim(self) -> int: return self.num_actions
 
     @property
+    def device(self) -> torch.device: return self._device
+
+    @property
+    def num_envs(self) -> int: return self._num_envs
+
+    @property
+    def max_episode_length(self) -> int: return self._max_episode_length
+
+    @property
     def unwrapped(self): return self
 
     @property
-    def action_manager(self) -> None: return None
+    def action_manager(self) -> None:
+        raise AttributeError("Entorno directo sin action_manager")
 
     @property
-    def observation_manager(self) -> None: return None
+    def observation_manager(self) -> None:
+        raise AttributeError("Entorno directo sin observation_manager")
 
     def _create_simulation(self) -> None:
         cfg_sim = sim_utils.SimulationCfg(dt=self.cfg.dt_simulacion, device=self.cfg.dispositivo)
@@ -161,7 +174,7 @@ class EntornoMarchaRslRl(DirectRLEnv):
                 num_envs=self.cfg.num_entornos,
                 env_spacing=self.cfg.espaciado_entornos,
                 replicate_physics=True,
-                clone_in_fabric=True,
+                clone_in_fabric=self.cfg.usar_clone_en_fabric,
             )
         )
 
@@ -291,6 +304,9 @@ class EntornoMarchaRslRl(DirectRLEnv):
     def get_observations(self) -> Tensor:
         self._current_obs = self._build_observation()
         return self._current_obs
+
+    def _get_observations(self) -> dict[str, Tensor]:
+        return {"policy": self.get_observations()}
 
     def get_privileged_observations(self) -> None:
         return None
