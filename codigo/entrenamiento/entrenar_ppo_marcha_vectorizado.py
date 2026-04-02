@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
 import sys
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -109,6 +111,13 @@ def resolver_directorio_salida(directorio_salida: str) -> str:
     return str((raiz_repo / directorio_salida).resolve())
 
 
+def nombre_senal(signum: int) -> str:
+    try:
+        return signal.Signals(signum).name
+    except ValueError:
+        return f"SIGNAL_{signum}"
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--num-envs", type=int, default=64)
@@ -121,6 +130,19 @@ def main():
     app_launcher = AppLauncher(args)
     simulation_app = app_launcher.app
     completado = False
+    motivo_salida = None
+    codigo_salida = 1
+    manejadores_previos: dict[int, object] = {}
+
+    def manejar_senal(signum, _frame):
+        nonlocal motivo_salida
+        motivo_salida = f"senal recibida: {nombre_senal(signum)} ({signum})"
+        raise SystemExit(128 + signum)
+
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        if hasattr(signal, signal.Signals(signum).name):
+            manejadores_previos[signum] = signal.getsignal(signum)
+            signal.signal(signum, manejar_senal)
 
     try:
         from entornos.marcha_ppo_vec_env import (
@@ -270,17 +292,44 @@ def main():
                 print(f"[INFO] Guardado: {ruta}")
 
         completado = True
+        codigo_salida = 0
+
+    except KeyboardInterrupt:
+        if motivo_salida is None:
+            motivo_salida = "KeyboardInterrupt"
+        codigo_salida = 130
+        print(f"[ERROR] Entrenamiento interrumpido: {motivo_salida}", file=sys.stderr, flush=True)
+        traceback.print_exc()
+
+    except SystemExit as exc:
+        if motivo_salida is None:
+            motivo_salida = f"SystemExit({exc.code})"
+        codigo_salida = exc.code if isinstance(exc.code, int) else 1
+        print(f"[ERROR] Salida anticipada: {motivo_salida}", file=sys.stderr, flush=True)
+
+    except Exception as exc:
+        motivo_salida = f"{type(exc).__name__}: {exc}"
+        codigo_salida = 1
+        print(f"[ERROR] Excepcion no controlada: {motivo_salida}", file=sys.stderr, flush=True)
+        traceback.print_exc()
 
     finally:
+        for signum, manejador_previo in manejadores_previos.items():
+            signal.signal(signum, manejador_previo)
+
         if completado:
             print("[INFO] Entrenamiento finalizado. Saliendo sin cierre bloqueante de Isaac Sim.", flush=True)
             sys.stdout.flush()
             sys.stderr.flush()
             os._exit(0)
 
-        print("[INFO] Cerrando Isaac Sim tras interrupcion o error...", flush=True)
+        print(
+            f"[INFO] Cerrando Isaac Sim tras interrupcion o error. Motivo: {motivo_salida or 'desconocido'}",
+            flush=True,
+        )
         simulation_app.close()
         print("[INFO] Isaac Sim cerrado.", flush=True)
+        sys.exit(codigo_salida)
 
 
 if __name__ == "__main__":
