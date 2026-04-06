@@ -55,7 +55,8 @@ def main():
         "save_interval": 25,
         "experiment_name": "marcha_rsl_rl",
         "run_name": marca_tiempo,
-        "logger": "tensorboard",
+        "logger": "wandb",
+        "wandb_project": "kbot_rl",
         "resume": False,
         "obs_groups": {
             "actor": ["policy"],
@@ -97,7 +98,7 @@ def main():
     }
 
     # 4. Train!
-    print(f"[INFO] Iniciando entrenamiento. Tensorboard logs en: {log_dir}")
+    print(f"[INFO] Iniciando entrenamiento. Logs de W&B y artefactos locales en: {log_dir}")
     runner = OnPolicyRunner(env, cfg_rsl, log_dir=log_dir, device=device)
     # runner.learn(num_learning_iterations=args.iteraciones, init_at_random_ep_len=False)
     runner.learn(num_learning_iterations=args.iteraciones, init_at_random_ep_len=True)

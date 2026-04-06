@@ -8,6 +8,7 @@ RUTA_SCRIPT="$RAIZ_REPO/codigo/entrenamiento/entrenar_rsl_rl.py"
 source "$RAIZ_REPO/.venv/bin/activate"
 export PYTHONPATH="$RAIZ_REPO/codigo:${PYTHONPATH:-}"
 export TERM="xterm"
+source "$RAIZ_REPO/scripts/entrenar_marcha_rsl_rl.local.sh"
 
 cd "$DIRECTORIO_ISAACLAB"
 

@@ -21,3 +21,4 @@ assets/robot/meshes/
 .vscode/
 .idea/
 .DS_Store
+scripts/entrenar_marcha_rsl_rl.local.sh
