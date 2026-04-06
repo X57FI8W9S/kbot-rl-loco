@@ -3,6 +3,7 @@ import argparse
 import os
 import torch
 from pathlib import Path
+from datetime import datetime
 
 from isaaclab.app import AppLauncher
 from configuraciones.kbot_box_top import ConfiguracionKBotBoxTop
@@ -27,9 +28,11 @@ def main():
     from rsl_rl.runners import OnPolicyRunner
     from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
     from entornos.marcha_rsl_rl_env import ConfiguracionEntornoMarchaRslRl, EntornoMarchaRslRl
+    
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    log_dir = str((Path(__file__).resolve().parents[2] / "salidas/rsl_rl_marcha_vectorizado").resolve())
+    marca_tiempo = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_dir = str((Path(__file__).resolve().parents[2] / "salidas/rsl_rl_marcha_vectorizado"/ marca_tiempo).resolve())
     os.makedirs(log_dir, exist_ok=True)
 
     # 2. Initialize Environment
@@ -51,7 +54,7 @@ def main():
         "num_steps_per_env": 64,
         "save_interval": 25,
         "experiment_name": "marcha_rsl_rl",
-        "run_name": "1",
+        "run_name": marca_tiempo,
         "logger": "tensorboard",
         "resume": False,
         "obs_groups": {
