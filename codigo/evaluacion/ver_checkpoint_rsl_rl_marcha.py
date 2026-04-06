@@ -9,7 +9,7 @@ import torch
 from isaaclab.app import AppLauncher
 from configuraciones.kbot_box_top import ConfiguracionKBotBoxTop
 
-CHECKPOINT = "salidas/rsl_rl_marcha_vectorizado/model_75.pt"
+CHECKPOINT = "salidas/rsl_rl_marcha_vectorizado/model_299.pt"
 
 
 def main():

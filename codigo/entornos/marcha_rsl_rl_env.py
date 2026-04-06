@@ -46,21 +46,25 @@ class ConfiguracionEntornoMarchaRslRl:
     escala_velocidad_articulaciones: float = 0.05
     escala_accion: float = 0.20
 
-    velocidad_objetivo_min: float = 0.10
-    velocidad_objetivo_max: float = 1.20
+    velocidad_objetivo_min: float = 0.85
+    velocidad_objetivo_max: float = 0.85
     intervalo_reinicio_comando: int = 240
 
     altura_minima_base: float = 0.45
-    coseno_minimo_vertical: float = 0.55
+    coseno_minimo_vertical: float = 0.70
 
     peso_vx: float = 2.0
+    peso_vy: float = 0.4
+    peso_yaw: float = 0.3
     peso_verticalidad: float = 0.5
     peso_supervivencia: float = 0.2
     peso_suavidad_accion: float = 0.01
     peso_torque: float = 0.00002
-    peso_pose_nominal: float = 0.05
+    peso_pose_nominal: float = 0.005
 
     sigma_vx: float = 0.25
+    sigma_vy: float = 0.15
+    sigma_yaw: float = 0.20
     intensidad_luz: float = 3000.0
 
 
@@ -123,6 +127,8 @@ class EntornoMarchaRslRl(DirectRLEnv):
         
         self._episode_reward_sum = torch.zeros((self.num_envs,), device=self.device)
         self._episode_reward_vx_sum = torch.zeros((self.num_envs,), device=self.device)
+        self._episode_reward_vy_sum = torch.zeros((self.num_envs,), device=self.device)
+        self._episode_reward_yaw_sum = torch.zeros((self.num_envs,), device=self.device)
         self._episode_reward_vertical_sum = torch.zeros((self.num_envs,), device=self.device)
         self._episode_penalty_smoothness_sum = torch.zeros((self.num_envs,), device=self.device)
         self._episode_penalty_torque_sum = torch.zeros((self.num_envs,), device=self.device)
@@ -253,12 +259,16 @@ class EntornoMarchaRslRl(DirectRLEnv):
 
     def _compute_reward(self, current_action: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
         vx_real = self.robot.data.root_lin_vel_b[:, 0]
+        vy_real = self.robot.data.root_lin_vel_b[:, 1]
+        wz_real = self.robot.data.root_ang_vel_b[:, 2]
         gravedad_z = torch.abs(self.robot.data.projected_gravity_b[:, 2]).clamp(0.0, 1.0)
         q = self.robot.data.joint_pos[:, self.indices_controlados]
         q_err = q - self.pose_nominal_controlada
         torque = self._get_controlled_torque()
 
         recompensa_vx = torch.exp(-((vx_real - self.velocidad_objetivo_x) ** 2) / self.cfg.sigma_vx)
+        recompensa_vy = torch.exp(-(vy_real ** 2) / self.cfg.sigma_vy)
+        recompensa_yaw = torch.exp(-(wz_real ** 2) / self.cfg.sigma_yaw)
         recompensa_vertical = gravedad_z
         recompensa_supervivencia = torch.ones_like(recompensa_vx)
 
@@ -268,6 +278,8 @@ class EntornoMarchaRslRl(DirectRLEnv):
 
         recompensa = (
             self.cfg.peso_vx * recompensa_vx
+            + self.cfg.peso_vy * recompensa_vy
+            + self.cfg.peso_yaw * recompensa_yaw
             + self.cfg.peso_verticalidad * recompensa_vertical
             + self.cfg.peso_supervivencia * recompensa_supervivencia
             - self.cfg.peso_suavidad_accion * penalizacion_suavidad
@@ -277,6 +289,8 @@ class EntornoMarchaRslRl(DirectRLEnv):
 
         componentes = {
             "recompensa_vx": recompensa_vx.detach(),
+            "recompensa_vy": recompensa_vy.detach(),
+            "recompensa_yaw": recompensa_yaw.detach(),
             "recompensa_vertical": recompensa_vertical.detach(),
             "penalizacion_suavidad": penalizacion_suavidad.detach(),
             "penalizacion_torque": penalizacion_torque.detach(),
@@ -314,6 +328,8 @@ class EntornoMarchaRslRl(DirectRLEnv):
     def _update_episode_sums(self, reward: Tensor, reward_info: dict[str, Tensor]) -> None:
         self._episode_reward_sum += reward
         self._episode_reward_vx_sum += reward_info["recompensa_vx"]
+        self._episode_reward_vy_sum += reward_info["recompensa_vy"]
+        self._episode_reward_yaw_sum += reward_info["recompensa_yaw"]
         self._episode_reward_vertical_sum += reward_info["recompensa_vertical"]
         self._episode_penalty_smoothness_sum += reward_info["penalizacion_suavidad"]
         self._episode_penalty_torque_sum += reward_info["penalizacion_torque"]
@@ -325,6 +341,8 @@ class EntornoMarchaRslRl(DirectRLEnv):
             "reward": self._episode_reward_sum[done_env_ids].mean(),
             "length": lengths.mean(),
             "reward_vx": (self._episode_reward_vx_sum[done_env_ids] / lengths).mean(),
+            "reward_vy": (self._episode_reward_vy_sum[done_env_ids] / lengths).mean(),
+            "reward_yaw": (self._episode_reward_yaw_sum[done_env_ids] / lengths).mean(),
             "reward_vertical": (self._episode_reward_vertical_sum[done_env_ids] / lengths).mean(),
             "penalty_smoothness": (self._episode_penalty_smoothness_sum[done_env_ids] / lengths).mean(),
             "penalty_torque": (self._episode_penalty_torque_sum[done_env_ids] / lengths).mean(),
@@ -334,6 +352,8 @@ class EntornoMarchaRslRl(DirectRLEnv):
     def _clear_episode_sums(self, env_ids: Tensor) -> None:
         self._episode_reward_sum[env_ids] = 0.0
         self._episode_reward_vx_sum[env_ids] = 0.0
+        self._episode_reward_vy_sum[env_ids] = 0.0
+        self._episode_reward_yaw_sum[env_ids] = 0.0
         self._episode_reward_vertical_sum[env_ids] = 0.0
         self._episode_penalty_smoothness_sum[env_ids] = 0.0
         self._episode_penalty_torque_sum[env_ids] = 0.0
