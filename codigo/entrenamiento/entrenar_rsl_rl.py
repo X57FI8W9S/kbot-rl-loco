@@ -11,7 +11,7 @@ def main():
     # 1. Parse Arguments & Launch Isaac Sim
     parser = argparse.ArgumentParser()
     parser.add_argument("--num-envs", type=int, default=4096)
-    parser.add_argument("--iteraciones", type=int, default=4000)
+    parser.add_argument("--iteraciones", type=int, default=300)
     parser.add_argument(
         "--fabric-cloning",
         action="store_true",
@@ -48,7 +48,7 @@ def main():
     cfg_rsl = {
         "seed": 42,
         "device": device,
-        "num_steps_per_env": 4096,
+        "num_steps_per_env": 64,
         "save_interval": 25,
         "experiment_name": "marcha_rsl_rl",
         "run_name": "1",
@@ -81,8 +81,8 @@ def main():
             "use_clipped_value_loss": True,
             "clip_param": 0.2,
             "entropy_coef": 0.01,
-            "num_learning_epochs": 5,
-            "num_mini_batches": max(1, (args.num_envs * pasos_rollout) // 4096),
+            "num_learning_epochs": 10,
+            "num_mini_batches": 128,
             "learning_rate": 3e-4,
             "schedule": "fixed",
             "gamma": 0.99,
@@ -96,7 +96,8 @@ def main():
     # 4. Train!
     print(f"[INFO] Iniciando entrenamiento. Tensorboard logs en: {log_dir}")
     runner = OnPolicyRunner(env, cfg_rsl, log_dir=log_dir, device=device)
-    runner.learn(num_learning_iterations=args.iteraciones, init_at_random_ep_len=False)
+    # runner.learn(num_learning_iterations=args.iteraciones, init_at_random_ep_len=False)
+    runner.learn(num_learning_iterations=args.iteraciones, init_at_random_ep_len=True)
 
     simulation_app.close()
 
