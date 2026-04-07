@@ -46,25 +46,26 @@ class ConfiguracionEntornoMarchaRslRl:
     escala_velocidad_articulaciones: float = 0.05
     escala_accion: float = 0.20
 
-    velocidad_objetivo_min: float = 0.85
-    velocidad_objetivo_max: float = 0.85
+    velocidad_objetivo_min: float = 0.20
+    velocidad_objetivo_max: float = 0.45
     intervalo_reinicio_comando: int = 240
 
     altura_minima_base: float = 0.45
     coseno_minimo_vertical: float = 0.70
 
     peso_vx: float = 2.0
-    peso_vy: float = 0.4
-    peso_yaw: float = 0.3
-    peso_verticalidad: float = 0.5
-    peso_supervivencia: float = 0.2
+    peso_vy: float = 0.10
+    peso_y: float = 0.05
+    peso_yaw: float = 0.10
+    peso_verticalidad: float = 0.05
+    peso_supervivencia: float = 0.02
     peso_suavidad_accion: float = 0.01
     peso_torque: float = 0.00002
     peso_pose_nominal: float = 0.005
 
     sigma_vx: float = 0.25
-    sigma_vy: float = 0.15
-    sigma_yaw: float = 0.20
+    sigma_vy: float = 0.08
+    sigma_yaw: float = 0.10
     intensidad_luz: float = 3000.0
 
 
@@ -118,6 +119,7 @@ class EntornoMarchaRslRl(DirectRLEnv):
         self.actions = torch.zeros((self.num_envs, self.num_actions), device=self.device)
         self.previous_actions = torch.zeros((self.num_envs, self.num_actions), device=self.device)
         self.velocidad_objetivo_x = torch.zeros((self.num_envs,), device=self.device)
+        self.x_anterior = torch.zeros((self.num_envs,), device=self.device)
         self.episode_length_buf = torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
         self.reset_terminated = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
         self.reset_time_outs = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
@@ -258,19 +260,25 @@ class EntornoMarchaRslRl(DirectRLEnv):
         return torch.cat([gravedad, vel_ang_base, cmd, q_err, qd, self.previous_actions], dim=1)
 
     def _compute_reward(self, current_action: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
-        vx_real = self.robot.data.root_lin_vel_b[:, 0]
-        vy_real = self.robot.data.root_lin_vel_b[:, 1]
+        x_actual = self.robot.data.root_pos_w[:, 0]
+        y_actual = self.robot.data.root_pos_w[:, 1]
+        vx_real = self.robot.data.root_lin_vel_w[:, 0]
+        vy_real = self.robot.data.root_lin_vel_w[:, 1]
         wz_real = self.robot.data.root_ang_vel_b[:, 2]
         gravedad_z = torch.abs(self.robot.data.projected_gravity_b[:, 2]).clamp(0.0, 1.0)
         q = self.robot.data.joint_pos[:, self.indices_controlados]
         q_err = q - self.pose_nominal_controlada
         torque = self._get_controlled_torque()
+        delta_x = x_actual - self.x_anterior
+        avance = torch.clamp(delta_x, min=0.0)
+        retroceso = torch.clamp(-delta_x, min=0.0)
 
-        recompensa_vx = torch.exp(-((vx_real - self.velocidad_objetivo_x) ** 2) / self.cfg.sigma_vx)
+        recompensa_vx = 120.0 * avance - 240.0 * retroceso
         recompensa_vy = torch.exp(-(vy_real ** 2) / self.cfg.sigma_vy)
         recompensa_yaw = torch.exp(-(wz_real ** 2) / self.cfg.sigma_yaw)
         recompensa_vertical = gravedad_z
         recompensa_supervivencia = torch.ones_like(recompensa_vx)
+        penalizacion_y = y_actual ** 2
 
         penalizacion_suavidad = torch.sum((current_action - self.previous_actions) ** 2, dim=1)
         penalizacion_torque = torch.sum(torque ** 2, dim=1)
@@ -282,6 +290,7 @@ class EntornoMarchaRslRl(DirectRLEnv):
             + self.cfg.peso_yaw * recompensa_yaw
             + self.cfg.peso_verticalidad * recompensa_vertical
             + self.cfg.peso_supervivencia * recompensa_supervivencia
+            - self.cfg.peso_y * penalizacion_y
             - self.cfg.peso_suavidad_accion * penalizacion_suavidad
             - self.cfg.peso_torque * penalizacion_torque
             - self.cfg.peso_pose_nominal * penalizacion_pose
@@ -292,6 +301,16 @@ class EntornoMarchaRslRl(DirectRLEnv):
             "recompensa_vy": recompensa_vy.detach(),
             "recompensa_yaw": recompensa_yaw.detach(),
             "recompensa_vertical": recompensa_vertical.detach(),
+            "delta_x": delta_x.detach(),
+            "avance_x": avance.detach(),
+            "retroceso_x": retroceso.detach(),
+            "x_actual": x_actual.detach(),
+            "y_actual": y_actual.detach(),
+            "x_anterior": self.x_anterior.detach(),
+            "velocidad_mundo_x": vx_real.detach(),
+            "velocidad_mundo_y": vy_real.detach(),
+            "velocidad_yaw": wz_real.detach(),
+            "penalizacion_y": penalizacion_y.detach(),
             "penalizacion_suavidad": penalizacion_suavidad.detach(),
             "penalizacion_torque": penalizacion_torque.detach(),
             "penalizacion_pose": penalizacion_pose.detach(),
@@ -378,6 +397,7 @@ class EntornoMarchaRslRl(DirectRLEnv):
 
         self.actions[env_ids] = 0.0
         self.previous_actions[env_ids] = 0.0
+        self.x_anterior[env_ids] = pose_root[:, 0]
         self.episode_length_buf[env_ids] = 0
         self.reset_terminated[env_ids] = False
         self.reset_time_outs[env_ids] = False
@@ -423,6 +443,7 @@ class EntornoMarchaRslRl(DirectRLEnv):
                 self._sample_command(torch.nonzero(cambiar_cmd, as_tuple=False).squeeze(-1))
 
         reward, reward_info = self._compute_reward(action)
+        self.x_anterior.copy_(self.robot.data.root_pos_w[:, 0])
         terminated, truncated, termination_info = self._compute_dones()
         dones = terminated | truncated
 
@@ -436,7 +457,11 @@ class EntornoMarchaRslRl(DirectRLEnv):
             **termination_info,
             "time_outs": truncated.clone(),
             "velocidad_objetivo_x": self.velocidad_objetivo_x.clone(),
-            "velocidad_real_x": self.robot.data.root_lin_vel_b[:, 0].clone(),
+            "velocidad_real_x": self.robot.data.root_lin_vel_w[:, 0].clone(),
+            "velocidad_real_y": self.robot.data.root_lin_vel_w[:, 1].clone(),
+            "x_actual": self.robot.data.root_pos_w[:, 0].clone(),
+            "x_anterior": self.x_anterior.clone(),
+            "yaw_rate_real": self.robot.data.root_ang_vel_b[:, 2].clone(),
             "altura_base": self.robot.data.root_pos_w[:, 2].clone(),
         }
 

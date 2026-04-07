@@ -11,8 +11,8 @@ from configuraciones.kbot_box_top import ConfiguracionKBotBoxTop
 def main():
     # 1. Parse Arguments & Launch Isaac Sim
     parser = argparse.ArgumentParser()
-    parser.add_argument("--num-envs", type=int, default=4096)
-    parser.add_argument("--iteraciones", type=int, default=300)
+    parser.add_argument("--num-envs", type=int, default=8192)
+    parser.add_argument("--iteraciones", type=int, default=500)
     parser.add_argument(
         "--fabric-cloning",
         action="store_true",
