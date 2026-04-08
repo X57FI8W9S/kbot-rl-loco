@@ -47,7 +47,7 @@ class ConfiguracionEntornoMarchaRslRl:
     escala_accion: float = 0.20
 
     velocidad_objetivo_min: float = 0.20
-    velocidad_objetivo_max: float = 0.20
+    velocidad_objetivo_max: float = 0.45
     intervalo_reinicio_comando: int = 240
 
     altura_minima_base: float = 0.45
@@ -55,12 +55,11 @@ class ConfiguracionEntornoMarchaRslRl:
 
     peso_vx: float = 2.0
     peso_vy: float = 0.10
-    peso_y: float = 0.05
     peso_yaw: float = 0.10
     peso_verticalidad: float = 0.05
     peso_supervivencia: float = 0.02
     peso_suavidad_accion: float = 0.01
-    peso_torque: float = 0.000005
+    peso_torque: float = 0.00002
     peso_pose_nominal: float = 0.005
 
     sigma_vx: float = 0.25
@@ -103,7 +102,6 @@ class EntornoMarchaRslRl(DirectRLEnv):
         self.num_obs = 3 + 3 + 1 + self.num_actions + self.num_actions + self.num_actions
         self.num_privileged_obs = 0
 
-        # Standard Gym Space definitions
         obs_bound = torch.inf * torch.ones(self.num_obs, dtype=torch.float32)
         act_bound = torch.ones(self.num_actions, dtype=torch.float32)
 
@@ -111,22 +109,20 @@ class EntornoMarchaRslRl(DirectRLEnv):
             "policy": gym.spaces.Box(low=-obs_bound.cpu().numpy(), high=obs_bound.cpu().numpy())
         })
         self.single_action_space = gym.spaces.Box(low=-act_bound.cpu().numpy(), high=act_bound.cpu().numpy())
-        
+
         self.observation_space = batch_space(self.single_observation_space, self.num_envs)
         self.action_space = batch_space(self.single_action_space, self.num_envs)
 
-        # RL Buffers
         self.actions = torch.zeros((self.num_envs, self.num_actions), device=self.device)
         self.previous_actions = torch.zeros((self.num_envs, self.num_actions), device=self.device)
         self.velocidad_objetivo_x = torch.zeros((self.num_envs,), device=self.device)
-        self.x_anterior = torch.zeros((self.num_envs,), device=self.device)
         self.episode_length_buf = torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
         self.reset_terminated = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
         self.reset_time_outs = torch.zeros((self.num_envs,), dtype=torch.bool, device=self.device)
 
         self._current_obs = torch.zeros((self.num_envs, self.num_obs), device=self.device)
         self._last_extras: dict[str, Any] = {}
-        
+
         self._episode_reward_sum = torch.zeros((self.num_envs,), device=self.device)
         self._episode_reward_vx_sum = torch.zeros((self.num_envs,), device=self.device)
         self._episode_reward_vy_sum = torch.zeros((self.num_envs,), device=self.device)
@@ -139,22 +135,28 @@ class EntornoMarchaRslRl(DirectRLEnv):
         self.reset()
 
     @property
-    def obs_dim(self) -> int: return self.num_obs
+    def obs_dim(self) -> int:
+        return self.num_obs
 
     @property
-    def act_dim(self) -> int: return self.num_actions
+    def act_dim(self) -> int:
+        return self.num_actions
 
     @property
-    def device(self) -> torch.device: return self._device
+    def device(self) -> torch.device:
+        return self._device
 
     @property
-    def num_envs(self) -> int: return self._num_envs
+    def num_envs(self) -> int:
+        return self._num_envs
 
     @property
-    def max_episode_length(self) -> int: return self._max_episode_length
+    def max_episode_length(self) -> int:
+        return self._max_episode_length
 
     @property
-    def unwrapped(self): return self
+    def unwrapped(self):
+        return self
 
     @property
     def action_manager(self) -> None:
@@ -260,8 +262,6 @@ class EntornoMarchaRslRl(DirectRLEnv):
         return torch.cat([gravedad, vel_ang_base, cmd, q_err, qd, self.previous_actions], dim=1)
 
     def _compute_reward(self, current_action: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
-        x_env = self.robot.data.root_pos_w[:, 0] - self.scene.env_origins[:, 0]
-        y_env = self.robot.data.root_pos_w[:, 1] - self.scene.env_origins[:, 1]
         vx_real = self.robot.data.root_lin_vel_w[:, 0]
         vy_real = self.robot.data.root_lin_vel_w[:, 1]
         wz_real = self.robot.data.root_ang_vel_b[:, 2]
@@ -269,16 +269,12 @@ class EntornoMarchaRslRl(DirectRLEnv):
         q = self.robot.data.joint_pos[:, self.indices_controlados]
         q_err = q - self.pose_nominal_controlada
         torque = self._get_controlled_torque()
-        delta_x = x_env - self.x_anterior
-        avance = torch.clamp(delta_x, min=0.0)
-        retroceso = torch.clamp(-delta_x, min=0.0)
 
-        recompensa_vx = 120.0 * avance - 240.0 * retroceso
+        recompensa_vx = torch.exp(-((vx_real - self.velocidad_objetivo_x) ** 2) / self.cfg.sigma_vx)
         recompensa_vy = torch.exp(-(vy_real ** 2) / self.cfg.sigma_vy)
         recompensa_yaw = torch.exp(-(wz_real ** 2) / self.cfg.sigma_yaw)
         recompensa_vertical = gravedad_z
         recompensa_supervivencia = torch.ones_like(recompensa_vx)
-        penalizacion_y = y_env ** 2
 
         penalizacion_suavidad = torch.sum((current_action - self.previous_actions) ** 2, dim=1)
         penalizacion_torque = torch.sum(torque ** 2, dim=1)
@@ -290,7 +286,6 @@ class EntornoMarchaRslRl(DirectRLEnv):
             + self.cfg.peso_yaw * recompensa_yaw
             + self.cfg.peso_verticalidad * recompensa_vertical
             + self.cfg.peso_supervivencia * recompensa_supervivencia
-            - self.cfg.peso_y * penalizacion_y
             - self.cfg.peso_suavidad_accion * penalizacion_suavidad
             - self.cfg.peso_torque * penalizacion_torque
             - self.cfg.peso_pose_nominal * penalizacion_pose
@@ -301,16 +296,9 @@ class EntornoMarchaRslRl(DirectRLEnv):
             "recompensa_vy": recompensa_vy.detach(),
             "recompensa_yaw": recompensa_yaw.detach(),
             "recompensa_vertical": recompensa_vertical.detach(),
-            "recompensa_supervivencia": recompensa_supervivencia.detach(),
-            "x_env": x_env.detach(),
-            "delta_x": delta_x.detach(),
-            "avance_x": avance.detach(),
-            "retroceso_x": retroceso.detach(),
-            "y_env": y_env.detach(),
             "velocidad_mundo_x": vx_real.detach(),
             "velocidad_mundo_y": vy_real.detach(),
             "velocidad_yaw": wz_real.detach(),
-            "penalizacion_y": penalizacion_y.detach(),
             "penalizacion_suavidad": penalizacion_suavidad.detach(),
             "penalizacion_torque": penalizacion_torque.detach(),
             "penalizacion_pose": penalizacion_pose.detach(),
@@ -397,7 +385,6 @@ class EntornoMarchaRslRl(DirectRLEnv):
 
         self.actions[env_ids] = 0.0
         self.previous_actions[env_ids] = 0.0
-        self.x_anterior[env_ids] = pose_root[:, 0] - self.scene.env_origins[env_ids, 0]
         self.episode_length_buf[env_ids] = 0
         self.reset_terminated[env_ids] = False
         self.reset_time_outs[env_ids] = False
@@ -443,7 +430,6 @@ class EntornoMarchaRslRl(DirectRLEnv):
                 self._sample_command(torch.nonzero(cambiar_cmd, as_tuple=False).squeeze(-1))
 
         reward, reward_info = self._compute_reward(action)
-        self.x_anterior.copy_(self.robot.data.root_pos_w[:, 0] - self.scene.env_origins[:, 0])
         terminated, truncated, termination_info = self._compute_dones()
         dones = terminated | truncated
 
@@ -459,7 +445,6 @@ class EntornoMarchaRslRl(DirectRLEnv):
             "velocidad_objetivo_x": self.velocidad_objetivo_x.clone(),
             "velocidad_real_x": self.robot.data.root_lin_vel_w[:, 0].clone(),
             "velocidad_real_y": self.robot.data.root_lin_vel_w[:, 1].clone(),
-            "x_env": (self.robot.data.root_pos_w[:, 0] - self.scene.env_origins[:, 0]).clone(),
             "yaw_rate_real": self.robot.data.root_ang_vel_b[:, 2].clone(),
             "altura_base": self.robot.data.root_pos_w[:, 2].clone(),
         }

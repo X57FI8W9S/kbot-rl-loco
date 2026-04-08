@@ -75,7 +75,7 @@ class ConfiguracionKBotBoxTop:
     """Configuracion minima que preserva el comportamiento actual de spawn."""
 
     ruta_usd: str = RUTA_USD_BOX_TOP_POR_DEFECTO
-    posicion_inicial_root: tuple[float, float, float] = (0.0, 0.0, 0.85)
+    posicion_inicial_root: tuple[float, float, float] = (0.0, 0.0, 0.90)
     activar_sensores_contacto: bool = True
     actuadores: ConfiguracionActuadoresKBot = field(default_factory=ConfiguracionActuadoresKBot)
 
