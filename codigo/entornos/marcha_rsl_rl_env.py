@@ -57,11 +57,15 @@ class ConfiguracionEntornoMarchaRslRl:
     peso_vy: float = 0.10
     peso_y: float = 0.05
     peso_yaw: float = 0.10
-    peso_verticalidad: float = 0.05
+    peso_verticalidad: float = 0.00
     peso_supervivencia: float = 0.02
     peso_suavidad_accion: float = 0.01
     peso_torque: float = 0.000005
-    peso_pose_nominal: float = 0.005
+    peso_pose_nominal: float = 0.000
+    peso_fin_supervivencia: float = 25.0
+    peso_fin_distancia_objetivo: float = 50.0
+    peso_fin_error_vx: float = 10.0
+    peso_fin_caida: float = 25.0
 
     sigma_vx: float = 0.25
     sigma_vy: float = 0.08
@@ -132,9 +136,11 @@ class EntornoMarchaRslRl(DirectRLEnv):
         self._episode_reward_vy_sum = torch.zeros((self.num_envs,), device=self.device)
         self._episode_reward_yaw_sum = torch.zeros((self.num_envs,), device=self.device)
         self._episode_reward_vertical_sum = torch.zeros((self.num_envs,), device=self.device)
+        self._episode_reward_supervivencia_sum = torch.zeros((self.num_envs,), device=self.device)
         self._episode_penalty_smoothness_sum = torch.zeros((self.num_envs,), device=self.device)
         self._episode_penalty_torque_sum = torch.zeros((self.num_envs,), device=self.device)
         self._episode_penalty_pose_sum = torch.zeros((self.num_envs,), device=self.device)
+        self._episode_penalty_error_vx_sum = torch.zeros((self.num_envs,), device=self.device)
 
         self.reset()
 
@@ -279,6 +285,7 @@ class EntornoMarchaRslRl(DirectRLEnv):
         recompensa_vertical = gravedad_z
         recompensa_supervivencia = torch.ones_like(recompensa_vx)
         penalizacion_y = y_env ** 2
+        penalizacion_error_vx = (vx_real - self.velocidad_objetivo_x) ** 2
 
         penalizacion_suavidad = torch.sum((current_action - self.previous_actions) ** 2, dim=1)
         penalizacion_torque = torch.sum(torque ** 2, dim=1)
@@ -311,6 +318,7 @@ class EntornoMarchaRslRl(DirectRLEnv):
             "velocidad_mundo_y": vy_real.detach(),
             "velocidad_yaw": wz_real.detach(),
             "penalizacion_y": penalizacion_y.detach(),
+            "penalizacion_error_vx": penalizacion_error_vx.detach(),
             "penalizacion_suavidad": penalizacion_suavidad.detach(),
             "penalizacion_torque": penalizacion_torque.detach(),
             "penalizacion_pose": penalizacion_pose.detach(),
@@ -350,9 +358,11 @@ class EntornoMarchaRslRl(DirectRLEnv):
         self._episode_reward_vy_sum += reward_info["recompensa_vy"]
         self._episode_reward_yaw_sum += reward_info["recompensa_yaw"]
         self._episode_reward_vertical_sum += reward_info["recompensa_vertical"]
+        self._episode_reward_supervivencia_sum += reward_info["recompensa_supervivencia"]
         self._episode_penalty_smoothness_sum += reward_info["penalizacion_suavidad"]
         self._episode_penalty_torque_sum += reward_info["penalizacion_torque"]
         self._episode_penalty_pose_sum += reward_info["penalizacion_pose"]
+        self._episode_penalty_error_vx_sum += reward_info["penalizacion_error_vx"]
 
     def _build_episode_extras(self, done_env_ids: Tensor) -> dict[str, Tensor]:
         lengths = self.episode_length_buf[done_env_ids].float().clamp_min(1.0)
@@ -363,6 +373,8 @@ class EntornoMarchaRslRl(DirectRLEnv):
             "reward_vy": (self._episode_reward_vy_sum[done_env_ids] / lengths).mean(),
             "reward_yaw": (self._episode_reward_yaw_sum[done_env_ids] / lengths).mean(),
             "reward_vertical": (self._episode_reward_vertical_sum[done_env_ids] / lengths).mean(),
+            "reward_supervivencia": (self._episode_reward_supervivencia_sum[done_env_ids] / lengths).mean(),
+            "penalty_error_vx": (self._episode_penalty_error_vx_sum[done_env_ids] / lengths).mean(),
             "penalty_smoothness": (self._episode_penalty_smoothness_sum[done_env_ids] / lengths).mean(),
             "penalty_torque": (self._episode_penalty_torque_sum[done_env_ids] / lengths).mean(),
             "penalty_pose": (self._episode_penalty_pose_sum[done_env_ids] / lengths).mean(),
@@ -374,9 +386,68 @@ class EntornoMarchaRslRl(DirectRLEnv):
         self._episode_reward_vy_sum[env_ids] = 0.0
         self._episode_reward_yaw_sum[env_ids] = 0.0
         self._episode_reward_vertical_sum[env_ids] = 0.0
+        self._episode_reward_supervivencia_sum[env_ids] = 0.0
         self._episode_penalty_smoothness_sum[env_ids] = 0.0
         self._episode_penalty_torque_sum[env_ids] = 0.0
         self._episode_penalty_pose_sum[env_ids] = 0.0
+        self._episode_penalty_error_vx_sum[env_ids] = 0.0
+
+    def _compute_terminal_rewards(
+        self, terminated: Tensor, truncated: Tensor
+    ) -> tuple[Tensor, dict[str, Tensor]]:
+        recompensa_fin_supervivencia = torch.zeros((self.num_envs,), device=self.device)
+        recompensa_fin_distancia_objetivo = torch.zeros((self.num_envs,), device=self.device)
+        penalizacion_fin_error_vx = torch.zeros((self.num_envs,), device=self.device)
+        penalizacion_fin_caida = torch.zeros((self.num_envs,), device=self.device)
+
+        dt_entorno = self.dt * self.cfg.decimacion
+        duracion_maxima_episodio = self.cfg.pasos_maximos_episodio * dt_entorno
+
+        env_ids_caida = torch.nonzero(terminated, as_tuple=False).squeeze(-1)
+        if env_ids_caida.numel() > 0:
+            x_env_caida = self.robot.data.root_pos_w[env_ids_caida, 0] - self.scene.env_origins[env_ids_caida, 0]
+            distancia_objetivo_caida = self.velocidad_objetivo_x[env_ids_caida] * duracion_maxima_episodio
+            distancia_objetivo_abs_caida = distancia_objetivo_caida.abs().clamp_min(1.0e-6)
+            progreso_hacia_objetivo = torch.clamp(x_env_caida / distancia_objetivo_abs_caida, min=0.0, max=1.0)
+            penalizacion_fin_caida[env_ids_caida] = self.cfg.peso_fin_caida * (1.0 - progreso_hacia_objetivo) ** 2
+
+        env_ids_fin = torch.nonzero(truncated & ~terminated, as_tuple=False).squeeze(-1)
+        if env_ids_fin.numel() == 0:
+            recompensa_fin = -penalizacion_fin_caida
+            return recompensa_fin, {
+                "recompensa_fin_supervivencia": recompensa_fin_supervivencia,
+                "recompensa_fin_distancia_objetivo": recompensa_fin_distancia_objetivo,
+                "penalizacion_fin_error_vx": penalizacion_fin_error_vx,
+                "penalizacion_fin_caida": penalizacion_fin_caida,
+            }
+
+        x_env = self.robot.data.root_pos_w[env_ids_fin, 0] - self.scene.env_origins[env_ids_fin, 0]
+        distancia_objetivo = self.velocidad_objetivo_x[env_ids_fin] * duracion_maxima_episodio
+        distancia_objetivo_abs = distancia_objetivo.abs().clamp_min(1.0e-6)
+        error_distancia_relativo = torch.abs(x_env - distancia_objetivo) / distancia_objetivo_abs
+
+        lengths = self.episode_length_buf[env_ids_fin].float().clamp_min(1.0)
+        error_vx_medio = self._episode_penalty_error_vx_sum[env_ids_fin] / lengths
+
+        recompensa_fin_supervivencia[env_ids_fin] = self.cfg.peso_fin_supervivencia
+        recompensa_fin_distancia_objetivo[env_ids_fin] = (
+            self.cfg.peso_fin_distancia_objetivo
+            * torch.clamp(1.0 - error_distancia_relativo, min=0.0, max=1.0)
+        )
+        penalizacion_fin_error_vx[env_ids_fin] = self.cfg.peso_fin_error_vx * error_vx_medio
+
+        recompensa_fin = (
+            recompensa_fin_supervivencia
+            + recompensa_fin_distancia_objetivo
+            - penalizacion_fin_error_vx
+            - penalizacion_fin_caida
+        )
+        return recompensa_fin, {
+            "recompensa_fin_supervivencia": recompensa_fin_supervivencia,
+            "recompensa_fin_distancia_objetivo": recompensa_fin_distancia_objetivo,
+            "penalizacion_fin_error_vx": penalizacion_fin_error_vx,
+            "penalizacion_fin_caida": penalizacion_fin_caida,
+        }
 
     def _reset_idx(self, env_ids: Tensor) -> None:
         if env_ids.numel() == 0:
@@ -446,6 +517,8 @@ class EntornoMarchaRslRl(DirectRLEnv):
         self.x_anterior.copy_(self.robot.data.root_pos_w[:, 0] - self.scene.env_origins[:, 0])
         terminated, truncated, termination_info = self._compute_dones()
         dones = terminated | truncated
+        recompensa_fin, reward_info_fin = self._compute_terminal_rewards(terminated, truncated)
+        reward = reward + recompensa_fin
 
         self._update_episode_sums(reward, reward_info)
         self.previous_actions.copy_(action)
@@ -454,6 +527,7 @@ class EntornoMarchaRslRl(DirectRLEnv):
 
         extras: dict[str, Any] = {
             **reward_info,
+            **reward_info_fin,
             **termination_info,
             "time_outs": truncated.clone(),
             "velocidad_objetivo_x": self.velocidad_objetivo_x.clone(),
@@ -466,7 +540,13 @@ class EntornoMarchaRslRl(DirectRLEnv):
 
         if torch.any(dones):
             env_ids_reset = torch.nonzero(dones, as_tuple=False).squeeze(-1)
-            extras["episode"] = self._build_episode_extras(env_ids_reset)
+            extras["episode"] = {
+                **self._build_episode_extras(env_ids_reset),
+                "reward_fin_supervivencia": reward_info_fin["recompensa_fin_supervivencia"][env_ids_reset].mean(),
+                "reward_fin_distancia_objetivo": reward_info_fin["recompensa_fin_distancia_objetivo"][env_ids_reset].mean(),
+                "penalty_fin_error_vx": reward_info_fin["penalizacion_fin_error_vx"][env_ids_reset].mean(),
+                "penalty_fin_caida": reward_info_fin["penalizacion_fin_caida"][env_ids_reset].mean(),
+            }
             self._reset_idx(env_ids_reset)
 
         self._last_extras = extras
