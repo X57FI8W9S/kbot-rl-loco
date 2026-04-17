@@ -2,75 +2,40 @@
 from __future__ import annotations
 
 import inspect
-from dataclasses import dataclass
 from typing import Any
 
-import numpy as np
 import torch
 import gymnasium as gym
 from gymnasium.vector.utils import batch_space
 
-import isaaclab.sim as sim_utils
-from isaaclab.actuators import ImplicitActuatorCfg
-from isaaclab.assets import Articulation, ArticulationCfg
-from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
-from isaaclab.sim import SimulationContext
 from isaaclab.envs import DirectRLEnv
 
-from configuraciones.kbot_box_top import (
-    OFFSETS_POSE_BOX_TOP,
-    ConfiguracionKBotBoxTop,
-    crear_pose_objetivo_desde_pose_por_defecto,
+from configuraciones.kbot_box_top import ConfiguracionKBotBoxTop
+from entornos.configuracion_marcha import (
+    ConfiguracionEntornoMarchaRslRl,
+    NOMBRES_ARTICULACIONES_CONTROLADAS,
 )
+from entornos.marcha_metricas import (
+    actualizar_sumas_episodio,
+    construir_extras_episodio,
+    limpiar_sumas_episodio,
+)
+from entornos.marcha_observaciones import construir_observacion
+from entornos.marcha_recompensas import (
+    calcular_recompensa_paso,
+    calcular_recompensa_terminal,
+)
+from entornos.marcha_estado_robot import (
+    accion_reducida_a_objetivo_completo,
+    mapear_articulaciones_controladas,
+    obtener_torque_controlado,
+    preparar_pose_nominal,
+    samplear_comando,
+)
+from entornos.marcha_escena import crear_escena, crear_simulacion
+from entornos.marcha_terminaciones import calcular_terminaciones
 
 Tensor = torch.Tensor
-
-NOMBRES_ARTICULACIONES_CONTROLADAS = [
-    "left_hip_pitch_04", "left_hip_roll_03", "left_hip_yaw_03", "left_knee_04", "left_ankle_02",
-    "right_hip_pitch_04", "right_hip_roll_03", "right_hip_yaw_03", "right_knee_04", "right_ankle_02",
-]
-
-
-@dataclass
-class ConfiguracionEntornoMarchaRslRl:
-    dispositivo: str = "cuda:0"
-    num_entornos: int = 64
-    espaciado_entornos: float = 2.5
-    usar_clone_en_fabric: bool = False
-    dt_simulacion: float = 1.0 / 120.0
-    decimacion: int = 2
-    pasos_maximos_episodio: int = 1200
-    is_finite_horizon: bool = True
-
-    escala_velocidad_angular_base: float = 0.25
-    escala_velocidad_articulaciones: float = 0.05
-    escala_accion: float = 0.20
-
-    velocidad_objetivo_min: float = 0.20
-    velocidad_objetivo_max: float = 0.20
-    intervalo_reinicio_comando: int = 240
-
-    altura_minima_base: float = 0.45
-    coseno_minimo_vertical: float = 0.70
-
-    peso_vx: float = 2.0
-    peso_vy: float = 0.10
-    peso_y: float = 0.05
-    peso_yaw: float = 0.10
-    peso_verticalidad: float = 0.00
-    peso_supervivencia: float = 0.02
-    peso_suavidad_accion: float = 0.01
-    peso_torque: float = 0.000005
-    peso_pose_nominal: float = 0.000
-    peso_fin_supervivencia: float = 25.0
-    peso_fin_distancia_objetivo: float = 50.0
-    peso_fin_error_vx: float = 10.0
-    peso_fin_caida: float = 25.0
-
-    sigma_vx: float = 0.25
-    sigma_vy: float = 0.08
-    sigma_yaw: float = 0.10
-    intensidad_luz: float = 3000.0
 
 
 class EntornoMarchaRslRl(DirectRLEnv):
@@ -133,6 +98,7 @@ class EntornoMarchaRslRl(DirectRLEnv):
         
         self._episode_reward_sum = torch.zeros((self.num_envs,), device=self.device)
         self._episode_reward_vx_sum = torch.zeros((self.num_envs,), device=self.device)
+        self._episode_reward_progreso_sum = torch.zeros((self.num_envs,), device=self.device)
         self._episode_reward_vy_sum = torch.zeros((self.num_envs,), device=self.device)
         self._episode_reward_yaw_sum = torch.zeros((self.num_envs,), device=self.device)
         self._episode_reward_vertical_sum = torch.zeros((self.num_envs,), device=self.device)
@@ -171,176 +137,34 @@ class EntornoMarchaRslRl(DirectRLEnv):
         raise AttributeError("Entorno directo sin observation_manager")
 
     def _create_simulation(self) -> None:
-        cfg_sim = sim_utils.SimulationCfg(dt=self.cfg.dt_simulacion, device=self.cfg.dispositivo)
-        self.simulation = SimulationContext(cfg_sim)
-        self.dt = cfg_sim.dt
-        self.simulation.set_camera_view([6, 6, 4], [0, 0, 0])
+        crear_simulacion(self)
 
     def _create_scene(self) -> None:
-        floor_cfg = sim_utils.GroundPlaneCfg()
-        floor_cfg.func("/World/piso", floor_cfg)
-
-        light_cfg = sim_utils.DistantLightCfg(intensity=self.cfg.intensidad_luz)
-        light_cfg.func("/World/luz", light_cfg)
-
-        self.scene = InteractiveScene(
-            InteractiveSceneCfg(
-                num_envs=self.cfg.num_entornos,
-                env_spacing=self.cfg.espaciado_entornos,
-                replicate_physics=True,
-                clone_in_fabric=self.cfg.usar_clone_en_fabric,
-            )
-        )
-
-        articulation_cfg = ArticulationCfg(
-            prim_path=f"{self.scene.env_regex_ns}/KBotBoxTop",
-            spawn=sim_utils.UsdFileCfg(
-                usd_path=self.cfg_robot.ruta_usd,
-                activate_contact_sensors=self.cfg_robot.activar_sensores_contacto,
-            ),
-            init_state=ArticulationCfg.InitialStateCfg(pos=self.cfg_robot.posicion_inicial_root),
-            actuators={
-                "todos": ImplicitActuatorCfg(
-                    joint_names_expr=list(self.cfg_robot.actuadores.expresiones_nombres_articulaciones),
-                    effort_limit_sim=self.cfg_robot.actuadores.limite_esfuerzo_sim,
-                    stiffness=self.cfg_robot.actuadores.rigidez,
-                    damping=self.cfg_robot.actuadores.amortiguamiento,
-                )
-            },
-        )
-
-        self.robot = Articulation(articulation_cfg)
-        self.scene.articulations["robot"] = self.robot
-        self.scene.clone_environments(copy_from_source=False)
-
-        if self.device.type == "cpu":
-            self.scene.filter_collisions(global_prim_paths=["/World/piso"])
+        crear_escena(self)
 
     def _map_controlled_joints(self) -> None:
-        self.nombres_articulaciones = list(self.robot.data.joint_names)
-        self.indices_controlados = []
-        for nombre in NOMBRES_ARTICULACIONES_CONTROLADAS:
-            if nombre not in self.nombres_articulaciones:
-                raise ValueError(f"No encontre la articulacion controlada: {nombre}")
-            self.indices_controlados.append(self.nombres_articulaciones.index(nombre))
-
-        self.indices_controlados = torch.tensor(self.indices_controlados, dtype=torch.long, device=self.device)
+        mapear_articulaciones_controladas(self)
 
     def _prepare_nominal_pose(self) -> None:
-        pose_objetivo = crear_pose_objetivo_desde_pose_por_defecto(
-            self.robot, offsets_articulaciones=OFFSETS_POSE_BOX_TOP
-        )
-        self.pose_nominal_completa = pose_objetivo.clone()
-        self.pose_nominal_controlada = pose_objetivo[:, self.indices_controlados].clone()
+        preparar_pose_nominal(self)
 
     def _sample_command(self, env_ids: Tensor | None = None) -> None:
-        if env_ids is None:
-            env_ids = self.env_ids_todos
-        self.velocidad_objetivo_x[env_ids] = torch.empty(
-            len(env_ids), device=self.device
-        ).uniform_(self.cfg.velocidad_objetivo_min, self.cfg.velocidad_objetivo_max)
+        samplear_comando(self, env_ids)
 
     def _reduced_action_to_full_target(self, reduced_action: Tensor) -> Tensor:
-        objetivo = self.pose_nominal_completa.clone()
-        objetivo[:, self.indices_controlados] = (
-            self.pose_nominal_controlada + self.cfg.escala_accion * reduced_action
-        )
-        return objetivo
+        return accion_reducida_a_objetivo_completo(self, reduced_action)
 
     def _get_controlled_torque(self) -> Tensor:
-        for nombre in ["computed_torque", "applied_torque", "joint_torque", "joint_effort"]:
-            if hasattr(self.robot.data, nombre):
-                valor = getattr(self.robot.data, nombre)
-                if isinstance(valor, torch.Tensor):
-                    return valor[:, self.indices_controlados]
-        return torch.zeros((self.num_envs, self.num_actions), device=self.device)
+        return obtener_torque_controlado(self)
 
     def _build_observation(self) -> Tensor:
-        gravedad = self.robot.data.projected_gravity_b
-        vel_ang_base = self.robot.data.root_ang_vel_b * self.cfg.escala_velocidad_angular_base
-        q = self.robot.data.joint_pos[:, self.indices_controlados]
-        qd = self.robot.data.joint_vel[:, self.indices_controlados] * self.cfg.escala_velocidad_articulaciones
-        q_err = q - self.pose_nominal_controlada
-        cmd = self.velocidad_objetivo_x.view(-1, 1)
-
-        return torch.cat([gravedad, vel_ang_base, cmd, q_err, qd, self.previous_actions], dim=1)
+        return construir_observacion(self)
 
     def _compute_reward(self, current_action: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
-        x_env = self.robot.data.root_pos_w[:, 0] - self.scene.env_origins[:, 0]
-        y_env = self.robot.data.root_pos_w[:, 1] - self.scene.env_origins[:, 1]
-        vx_real = self.robot.data.root_lin_vel_w[:, 0]
-        vy_real = self.robot.data.root_lin_vel_w[:, 1]
-        wz_real = self.robot.data.root_ang_vel_b[:, 2]
-        gravedad_z = torch.abs(self.robot.data.projected_gravity_b[:, 2]).clamp(0.0, 1.0)
-        q = self.robot.data.joint_pos[:, self.indices_controlados]
-        q_err = q - self.pose_nominal_controlada
-        torque = self._get_controlled_torque()
-        delta_x = x_env - self.x_anterior
-        avance = torch.clamp(delta_x, min=0.0)
-        retroceso = torch.clamp(-delta_x, min=0.0)
-
-        recompensa_vx = 120.0 * avance - 240.0 * retroceso
-        recompensa_vy = torch.exp(-(vy_real ** 2) / self.cfg.sigma_vy)
-        recompensa_yaw = torch.exp(-(wz_real ** 2) / self.cfg.sigma_yaw)
-        recompensa_vertical = gravedad_z
-        recompensa_supervivencia = torch.ones_like(recompensa_vx)
-        penalizacion_y = y_env ** 2
-        penalizacion_error_vx = (vx_real - self.velocidad_objetivo_x) ** 2
-
-        penalizacion_suavidad = torch.sum((current_action - self.previous_actions) ** 2, dim=1)
-        penalizacion_torque = torch.sum(torque ** 2, dim=1)
-        penalizacion_pose = torch.sum(q_err ** 2, dim=1)
-
-        recompensa = (
-            self.cfg.peso_vx * recompensa_vx
-            + self.cfg.peso_vy * recompensa_vy
-            + self.cfg.peso_yaw * recompensa_yaw
-            + self.cfg.peso_verticalidad * recompensa_vertical
-            + self.cfg.peso_supervivencia * recompensa_supervivencia
-            - self.cfg.peso_y * penalizacion_y
-            - self.cfg.peso_suavidad_accion * penalizacion_suavidad
-            - self.cfg.peso_torque * penalizacion_torque
-            - self.cfg.peso_pose_nominal * penalizacion_pose
-        )
-
-        componentes = {
-            "recompensa_vx": recompensa_vx.detach(),
-            "recompensa_vy": recompensa_vy.detach(),
-            "recompensa_yaw": recompensa_yaw.detach(),
-            "recompensa_vertical": recompensa_vertical.detach(),
-            "recompensa_supervivencia": recompensa_supervivencia.detach(),
-            "x_env": x_env.detach(),
-            "delta_x": delta_x.detach(),
-            "avance_x": avance.detach(),
-            "retroceso_x": retroceso.detach(),
-            "y_env": y_env.detach(),
-            "velocidad_mundo_x": vx_real.detach(),
-            "velocidad_mundo_y": vy_real.detach(),
-            "velocidad_yaw": wz_real.detach(),
-            "penalizacion_y": penalizacion_y.detach(),
-            "penalizacion_error_vx": penalizacion_error_vx.detach(),
-            "penalizacion_suavidad": penalizacion_suavidad.detach(),
-            "penalizacion_torque": penalizacion_torque.detach(),
-            "penalizacion_pose": penalizacion_pose.detach(),
-        }
-        return recompensa, componentes
+        return calcular_recompensa_paso(self, current_action)
 
     def _compute_dones(self) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
-        altura = self.robot.data.root_pos_w[:, 2]
-        coseno_vertical = torch.abs(self.robot.data.projected_gravity_b[:, 2])
-
-        caida_por_altura = altura < self.cfg.altura_minima_base
-        caida_por_inclinacion = coseno_vertical < self.cfg.coseno_minimo_vertical
-        truncado_por_tiempo = self.episode_length_buf >= self.cfg.pasos_maximos_episodio
-
-        terminated = caida_por_altura | caida_por_inclinacion
-        truncated = truncado_por_tiempo
-        info = {
-            "caida_por_altura": caida_por_altura,
-            "caida_por_inclinacion": caida_por_inclinacion,
-            "truncado_por_tiempo": truncado_por_tiempo,
-        }
-        return terminated, truncated, info
+        return calcular_terminaciones(self)
 
     def get_observations(self) -> Tensor:
         self._current_obs = self._build_observation()
@@ -353,101 +177,18 @@ class EntornoMarchaRslRl(DirectRLEnv):
         return None
 
     def _update_episode_sums(self, reward: Tensor, reward_info: dict[str, Tensor]) -> None:
-        self._episode_reward_sum += reward
-        self._episode_reward_vx_sum += reward_info["recompensa_vx"]
-        self._episode_reward_vy_sum += reward_info["recompensa_vy"]
-        self._episode_reward_yaw_sum += reward_info["recompensa_yaw"]
-        self._episode_reward_vertical_sum += reward_info["recompensa_vertical"]
-        self._episode_reward_supervivencia_sum += reward_info["recompensa_supervivencia"]
-        self._episode_penalty_smoothness_sum += reward_info["penalizacion_suavidad"]
-        self._episode_penalty_torque_sum += reward_info["penalizacion_torque"]
-        self._episode_penalty_pose_sum += reward_info["penalizacion_pose"]
-        self._episode_penalty_error_vx_sum += reward_info["penalizacion_error_vx"]
+        actualizar_sumas_episodio(self, reward, reward_info)
 
     def _build_episode_extras(self, done_env_ids: Tensor) -> dict[str, Tensor]:
-        lengths = self.episode_length_buf[done_env_ids].float().clamp_min(1.0)
-        return {
-            "reward": self._episode_reward_sum[done_env_ids].mean(),
-            "length": lengths.mean(),
-            "reward_vx": (self._episode_reward_vx_sum[done_env_ids] / lengths).mean(),
-            "reward_vy": (self._episode_reward_vy_sum[done_env_ids] / lengths).mean(),
-            "reward_yaw": (self._episode_reward_yaw_sum[done_env_ids] / lengths).mean(),
-            "reward_vertical": (self._episode_reward_vertical_sum[done_env_ids] / lengths).mean(),
-            "reward_supervivencia": (self._episode_reward_supervivencia_sum[done_env_ids] / lengths).mean(),
-            "penalty_error_vx": (self._episode_penalty_error_vx_sum[done_env_ids] / lengths).mean(),
-            "penalty_smoothness": (self._episode_penalty_smoothness_sum[done_env_ids] / lengths).mean(),
-            "penalty_torque": (self._episode_penalty_torque_sum[done_env_ids] / lengths).mean(),
-            "penalty_pose": (self._episode_penalty_pose_sum[done_env_ids] / lengths).mean(),
-        }
+        return construir_extras_episodio(self, done_env_ids)
 
     def _clear_episode_sums(self, env_ids: Tensor) -> None:
-        self._episode_reward_sum[env_ids] = 0.0
-        self._episode_reward_vx_sum[env_ids] = 0.0
-        self._episode_reward_vy_sum[env_ids] = 0.0
-        self._episode_reward_yaw_sum[env_ids] = 0.0
-        self._episode_reward_vertical_sum[env_ids] = 0.0
-        self._episode_reward_supervivencia_sum[env_ids] = 0.0
-        self._episode_penalty_smoothness_sum[env_ids] = 0.0
-        self._episode_penalty_torque_sum[env_ids] = 0.0
-        self._episode_penalty_pose_sum[env_ids] = 0.0
-        self._episode_penalty_error_vx_sum[env_ids] = 0.0
+        limpiar_sumas_episodio(self, env_ids)
 
     def _compute_terminal_rewards(
         self, terminated: Tensor, truncated: Tensor
     ) -> tuple[Tensor, dict[str, Tensor]]:
-        recompensa_fin_supervivencia = torch.zeros((self.num_envs,), device=self.device)
-        recompensa_fin_distancia_objetivo = torch.zeros((self.num_envs,), device=self.device)
-        penalizacion_fin_error_vx = torch.zeros((self.num_envs,), device=self.device)
-        penalizacion_fin_caida = torch.zeros((self.num_envs,), device=self.device)
-
-        dt_entorno = self.dt * self.cfg.decimacion
-        duracion_maxima_episodio = self.cfg.pasos_maximos_episodio * dt_entorno
-
-        env_ids_caida = torch.nonzero(terminated, as_tuple=False).squeeze(-1)
-        if env_ids_caida.numel() > 0:
-            x_env_caida = self.robot.data.root_pos_w[env_ids_caida, 0] - self.scene.env_origins[env_ids_caida, 0]
-            distancia_objetivo_caida = self.velocidad_objetivo_x[env_ids_caida] * duracion_maxima_episodio
-            distancia_objetivo_abs_caida = distancia_objetivo_caida.abs().clamp_min(1.0e-6)
-            progreso_hacia_objetivo = torch.clamp(x_env_caida / distancia_objetivo_abs_caida, min=0.0, max=1.0)
-            penalizacion_fin_caida[env_ids_caida] = self.cfg.peso_fin_caida * (1.0 - progreso_hacia_objetivo) ** 2
-
-        env_ids_fin = torch.nonzero(truncated & ~terminated, as_tuple=False).squeeze(-1)
-        if env_ids_fin.numel() == 0:
-            recompensa_fin = -penalizacion_fin_caida
-            return recompensa_fin, {
-                "recompensa_fin_supervivencia": recompensa_fin_supervivencia,
-                "recompensa_fin_distancia_objetivo": recompensa_fin_distancia_objetivo,
-                "penalizacion_fin_error_vx": penalizacion_fin_error_vx,
-                "penalizacion_fin_caida": penalizacion_fin_caida,
-            }
-
-        x_env = self.robot.data.root_pos_w[env_ids_fin, 0] - self.scene.env_origins[env_ids_fin, 0]
-        distancia_objetivo = self.velocidad_objetivo_x[env_ids_fin] * duracion_maxima_episodio
-        distancia_objetivo_abs = distancia_objetivo.abs().clamp_min(1.0e-6)
-        error_distancia_relativo = torch.abs(x_env - distancia_objetivo) / distancia_objetivo_abs
-
-        lengths = self.episode_length_buf[env_ids_fin].float().clamp_min(1.0)
-        error_vx_medio = self._episode_penalty_error_vx_sum[env_ids_fin] / lengths
-
-        recompensa_fin_supervivencia[env_ids_fin] = self.cfg.peso_fin_supervivencia
-        recompensa_fin_distancia_objetivo[env_ids_fin] = (
-            self.cfg.peso_fin_distancia_objetivo
-            * torch.clamp(1.0 - error_distancia_relativo, min=0.0, max=1.0)
-        )
-        penalizacion_fin_error_vx[env_ids_fin] = self.cfg.peso_fin_error_vx * error_vx_medio
-
-        recompensa_fin = (
-            recompensa_fin_supervivencia
-            + recompensa_fin_distancia_objetivo
-            - penalizacion_fin_error_vx
-            - penalizacion_fin_caida
-        )
-        return recompensa_fin, {
-            "recompensa_fin_supervivencia": recompensa_fin_supervivencia,
-            "recompensa_fin_distancia_objetivo": recompensa_fin_distancia_objetivo,
-            "penalizacion_fin_error_vx": penalizacion_fin_error_vx,
-            "penalizacion_fin_caida": penalizacion_fin_caida,
-        }
+        return calcular_recompensa_terminal(self, terminated, truncated)
 
     def _reset_idx(self, env_ids: Tensor) -> None:
         if env_ids.numel() == 0:
