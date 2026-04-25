@@ -51,7 +51,7 @@ class ConfiguracionEntornoMarchaRslRl:
     peso_yaw: float = 10.00
     peso_verticalidad: float = 1.00
     peso_supervivencia: float = 0.5
-    peso_progreso: float = 0.50
+    peso_avance: float = 0.50
     peso_suavidad_accion: float = 0.01
     peso_torque: float = 0.000005
     peso_pose_nominal: float = 0.000

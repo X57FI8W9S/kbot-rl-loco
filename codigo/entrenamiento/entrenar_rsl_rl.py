@@ -8,6 +8,22 @@ from datetime import datetime
 from isaaclab.app import AppLauncher
 from configuraciones.kbot_box_top import ConfiguracionKBotBoxTop
 
+
+def generar_artefactos_recompensas(log_dir: str) -> None:
+    try:
+        from evaluacion.graficos import generar_graficos
+        from evaluacion.pasar_recompensas_a_csv import convertir_run_a_csv
+
+        run_dir = Path(log_dir)
+        ruta_csv = convertir_run_a_csv(run_dir)
+        rutas_graficos = generar_graficos(run_dir)
+        print(f"[INFO] CSV de recompensas generado: {ruta_csv}", flush=True)
+        for ruta_grafico in rutas_graficos:
+            print(f"[INFO] Grafico de recompensas generado: {ruta_grafico}", flush=True)
+    except Exception as exc:
+        print(f"[WARN] No se pudieron generar graficos de recompensas: {exc}", flush=True)
+
+
 def main():
     # 1. Parse Arguments & Launch Isaac Sim
     parser = argparse.ArgumentParser()
@@ -100,10 +116,13 @@ def main():
     # 4. Train!
     print(f"[INFO] Iniciando entrenamiento. Logs de W&B y artefactos locales en: {log_dir}")
     runner = OnPolicyRunner(env, cfg_rsl, log_dir=log_dir, device=device)
-    # runner.learn(num_learning_iterations=args.iteraciones, init_at_random_ep_len=False)
-    runner.learn(num_learning_iterations=args.iteraciones, init_at_random_ep_len=True)
 
-    simulation_app.close()
+    try:
+        # runner.learn(num_learning_iterations=args.iteraciones, init_at_random_ep_len=False)
+        runner.learn(num_learning_iterations=args.iteraciones, init_at_random_ep_len=True)
+        generar_artefactos_recompensas(log_dir)
+    finally:
+        simulation_app.close()
 
 if __name__ == "__main__":
     main()

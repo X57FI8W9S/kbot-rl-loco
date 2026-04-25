@@ -60,13 +60,13 @@ class EntornoMarchaRslRl(DirectRLEnv):
 
         self.env_ids_todos = torch.arange(self.num_envs, dtype=torch.long, device=self.device)
 
-        self._create_simulation()
-        self._create_scene()
+        self._crear_simulacion()
+        self._crear_escena()
         self.simulation.reset()
         self.scene.update(self.dt)
 
-        self._map_controlled_joints()
-        self._prepare_nominal_pose()
+        self._mapear_articulaciones_controladas()
+        self._preparar_pose_nominal()
 
         self.num_actions = len(NOMBRES_ARTICULACIONES_CONTROLADAS)
         self.num_obs = 3 + 3 + 1 + self.num_actions + self.num_actions + self.num_actions
@@ -96,17 +96,29 @@ class EntornoMarchaRslRl(DirectRLEnv):
         self._current_obs = torch.zeros((self.num_envs, self.num_obs), device=self.device)
         self._last_extras: dict[str, Any] = {}
         
-        self._episode_reward_sum = torch.zeros((self.num_envs,), device=self.device)
-        self._episode_reward_vx_sum = torch.zeros((self.num_envs,), device=self.device)
-        self._episode_reward_progreso_sum = torch.zeros((self.num_envs,), device=self.device)
-        self._episode_reward_vy_sum = torch.zeros((self.num_envs,), device=self.device)
-        self._episode_reward_yaw_sum = torch.zeros((self.num_envs,), device=self.device)
-        self._episode_reward_vertical_sum = torch.zeros((self.num_envs,), device=self.device)
-        self._episode_reward_supervivencia_sum = torch.zeros((self.num_envs,), device=self.device)
-        self._episode_penalty_smoothness_sum = torch.zeros((self.num_envs,), device=self.device)
-        self._episode_penalty_torque_sum = torch.zeros((self.num_envs,), device=self.device)
-        self._episode_penalty_pose_sum = torch.zeros((self.num_envs,), device=self.device)
-        self._episode_penalty_error_vx_sum = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_recompensa_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_aporte_vx_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_aporte_x_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_aporte_vy_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_aporte_yaw_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_aporte_vert_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_aporte_superv_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_costo_y_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_costo_suavidad_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_costo_torque_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_costo_pose_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_recompensa_vx_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_recompensa_avance_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_recompensa_vy_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_recompensa_yaw_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_recompensa_vertical_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_recompensa_supervivencia_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_factor_marcha_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_costo_y_base_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_costo_suavidad_base_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_costo_torque_base_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_costo_pose_base_episodio = torch.zeros((self.num_envs,), device=self.device)
+        self._suma_costo_error_vx_episodio = torch.zeros((self.num_envs,), device=self.device)
 
         self.reset()
 
@@ -136,38 +148,38 @@ class EntornoMarchaRslRl(DirectRLEnv):
     def observation_manager(self) -> None:
         raise AttributeError("Entorno directo sin observation_manager")
 
-    def _create_simulation(self) -> None:
+    def _crear_simulacion(self) -> None:
         crear_simulacion(self)
 
-    def _create_scene(self) -> None:
+    def _crear_escena(self) -> None:
         crear_escena(self)
 
-    def _map_controlled_joints(self) -> None:
+    def _mapear_articulaciones_controladas(self) -> None:
         mapear_articulaciones_controladas(self)
 
-    def _prepare_nominal_pose(self) -> None:
+    def _preparar_pose_nominal(self) -> None:
         preparar_pose_nominal(self)
 
-    def _sample_command(self, env_ids: Tensor | None = None) -> None:
+    def _samplear_comando(self, env_ids: Tensor | None = None) -> None:
         samplear_comando(self, env_ids)
 
-    def _reduced_action_to_full_target(self, reduced_action: Tensor) -> Tensor:
+    def _accion_reducida_a_objetivo_completo(self, reduced_action: Tensor) -> Tensor:
         return accion_reducida_a_objetivo_completo(self, reduced_action)
 
-    def _get_controlled_torque(self) -> Tensor:
+    def _obtener_torque_controlado(self) -> Tensor:
         return obtener_torque_controlado(self)
 
-    def _build_observation(self) -> Tensor:
+    def _construir_observacion(self) -> Tensor:
         return construir_observacion(self)
 
-    def _compute_reward(self, current_action: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
+    def _calcular_recompensa_paso(self, current_action: Tensor) -> tuple[Tensor, dict[str, Tensor]]:
         return calcular_recompensa_paso(self, current_action)
 
-    def _compute_dones(self) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
+    def _calcular_terminaciones(self) -> tuple[Tensor, Tensor, dict[str, Tensor]]:
         return calcular_terminaciones(self)
 
     def get_observations(self) -> Tensor:
-        self._current_obs = self._build_observation()
+        self._current_obs = self._construir_observacion()
         return self._current_obs
 
     def _get_observations(self) -> dict[str, Tensor]:
@@ -176,16 +188,16 @@ class EntornoMarchaRslRl(DirectRLEnv):
     def get_privileged_observations(self) -> None:
         return None
 
-    def _update_episode_sums(self, reward: Tensor, reward_info: dict[str, Tensor]) -> None:
+    def _actualizar_sumas_episodio(self, reward: Tensor, reward_info: dict[str, Tensor]) -> None:
         actualizar_sumas_episodio(self, reward, reward_info)
 
-    def _build_episode_extras(self, done_env_ids: Tensor) -> dict[str, Tensor]:
+    def _construir_extras_episodio(self, done_env_ids: Tensor) -> dict[str, Tensor]:
         return construir_extras_episodio(self, done_env_ids)
 
-    def _clear_episode_sums(self, env_ids: Tensor) -> None:
+    def _limpiar_sumas_episodio(self, env_ids: Tensor) -> None:
         limpiar_sumas_episodio(self, env_ids)
 
-    def _compute_terminal_rewards(
+    def _calcular_recompensa_terminal(
         self, terminated: Tensor, truncated: Tensor
     ) -> tuple[Tensor, dict[str, Tensor]]:
         return calcular_recompensa_terminal(self, terminated, truncated)
@@ -213,8 +225,8 @@ class EntornoMarchaRslRl(DirectRLEnv):
         self.episode_length_buf[env_ids] = 0
         self.reset_terminated[env_ids] = False
         self.reset_time_outs[env_ids] = False
-        self._clear_episode_sums(env_ids)
-        self._sample_command(env_ids)
+        self._limpiar_sumas_episodio(env_ids)
+        self._samplear_comando(env_ids)
 
         self.robot.set_joint_position_target(self.pose_nominal_completa)
         self.scene.write_data_to_sim()
@@ -237,7 +249,7 @@ class EntornoMarchaRslRl(DirectRLEnv):
         action = action.to(self.device).view(self.num_envs, self.num_actions).clamp(-1.0, 1.0)
         self.actions.copy_(action)
 
-        target_q = self._reduced_action_to_full_target(action)
+        target_q = self._accion_reducida_a_objetivo_completo(action)
         for _ in range(self.cfg.decimacion):
             self.robot.set_joint_position_target(target_q)
             self.scene.write_data_to_sim()
@@ -252,16 +264,16 @@ class EntornoMarchaRslRl(DirectRLEnv):
         if self.cfg.intervalo_reinicio_comando > 0:
             cambiar_cmd = (self.episode_length_buf % self.cfg.intervalo_reinicio_comando) == 0
             if torch.any(cambiar_cmd):
-                self._sample_command(torch.nonzero(cambiar_cmd, as_tuple=False).squeeze(-1))
+                self._samplear_comando(torch.nonzero(cambiar_cmd, as_tuple=False).squeeze(-1))
 
-        reward, reward_info = self._compute_reward(action)
+        reward, reward_info = self._calcular_recompensa_paso(action)
         self.x_anterior.copy_(self.robot.data.root_pos_w[:, 0] - self.scene.env_origins[:, 0])
-        terminated, truncated, termination_info = self._compute_dones()
+        terminated, truncated, termination_info = self._calcular_terminaciones()
         dones = terminated | truncated
-        recompensa_fin, reward_info_fin = self._compute_terminal_rewards(terminated, truncated)
+        recompensa_fin, reward_info_fin = self._calcular_recompensa_terminal(terminated, truncated)
         reward = reward + recompensa_fin
 
-        self._update_episode_sums(reward, reward_info)
+        self._actualizar_sumas_episodio(reward, reward_info)
         self.previous_actions.copy_(action)
         self.reset_terminated.copy_(terminated)
         self.reset_time_outs.copy_(truncated)
@@ -272,21 +284,21 @@ class EntornoMarchaRslRl(DirectRLEnv):
             **termination_info,
             "time_outs": truncated.clone(),
             "velocidad_objetivo_x": self.velocidad_objetivo_x.clone(),
-            "velocidad_real_x": self.robot.data.root_lin_vel_w[:, 0].clone(),
-            "velocidad_real_y": self.robot.data.root_lin_vel_w[:, 1].clone(),
-            "x_env": (self.robot.data.root_pos_w[:, 0] - self.scene.env_origins[:, 0]).clone(),
-            "yaw_rate_real": self.robot.data.root_ang_vel_b[:, 2].clone(),
+            "vel_x": self.robot.data.root_lin_vel_w[:, 0].clone(),
+            "vel_y": self.robot.data.root_lin_vel_w[:, 1].clone(),
+            "pos_x": (self.robot.data.root_pos_w[:, 0] - self.scene.env_origins[:, 0]).clone(),
+            "vel_wz": self.robot.data.root_ang_vel_b[:, 2].clone(),
             "altura_base": self.robot.data.root_pos_w[:, 2].clone(),
         }
 
         if torch.any(dones):
             env_ids_reset = torch.nonzero(dones, as_tuple=False).squeeze(-1)
             extras["episode"] = {
-                **self._build_episode_extras(env_ids_reset),
-                "reward_fin_supervivencia": reward_info_fin["recompensa_fin_supervivencia"][env_ids_reset].mean(),
-                "reward_fin_distancia_objetivo": reward_info_fin["recompensa_fin_distancia_objetivo"][env_ids_reset].mean(),
-                "penalty_fin_error_vx": reward_info_fin["penalizacion_fin_error_vx"][env_ids_reset].mean(),
-                "penalty_fin_caida": reward_info_fin["penalizacion_fin_caida"][env_ids_reset].mean(),
+                **self._construir_extras_episodio(env_ids_reset),
+                "bonus_final_superv": reward_info_fin["bonus_final_superv"][env_ids_reset].mean(),
+                "bonus_final_x": reward_info_fin["bonus_final_x"][env_ids_reset].mean(),
+                "malus_final_vx": reward_info_fin["malus_final_vx"][env_ids_reset].mean(),
+                "malus_final_caida": reward_info_fin["malus_final_caida"][env_ids_reset].mean(),
             }
             self._reset_idx(env_ids_reset)
 
